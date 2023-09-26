@@ -2,7 +2,8 @@
 
 ### install:
 ```bash
-git clone xxx
+git clone https://github.com/SingletC/gpopt.git
+cd gpopt
 pip install .
 ```
 
