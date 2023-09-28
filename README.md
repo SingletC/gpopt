@@ -4,10 +4,13 @@
 ```bash
 git clone https://github.com/SingletC/gpopt.git
 cd gpopt
-pip install .
+python -m pip install .
 ```
-
-usage:
+### Verifation of installation (optional):
+```bash
+python -m gpopt.test
+````
+###usage:
 ```python
 
 from gpopt.optimizer import GPOPT

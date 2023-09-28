@@ -5,7 +5,7 @@ import gpytorch
 import numpy as np
 from scipy.optimize import minimize
 
-from utils import func_wraper
+from gpopt.utils import func_wraper
 
 __all__ = ['GPOPT']
 
@@ -35,7 +35,8 @@ class GPOPT:
         self.last_y = np.inf
         self.last_x = x0
         self.len_x = len(x0)
-        self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=self.len_x+1)  # Value + Derivative
+        self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(noise_constraint=None,
+            num_tasks=self.len_x + 1)  # Value + Derivative
 
     @property
     def _x_tensor(self):
@@ -46,34 +47,41 @@ class GPOPT:
         return torch.stack(self.train_y).reshape(-1, self.len_x + 1)
 
     def _train(self):
-        self.model = GPModelWithDerivatives(self._x_tensor, self._y_tensor, self.likelihood)
-        self.model.mean_module.constant = torch.nn.Parameter( self._y_tensor[:,0].mean())
-        self.model.mean_module.constant.requires_grad = False
-        self.model.train()
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.5)  # Includes GaussianLikelihood parameters
+
+        model = GPModelWithDerivatives(self._x_tensor, self._y_tensor, self.likelihood)
+        model.mean_module.constant = torch.nn.Parameter(self._y_tensor[:, 0].mean()+1.0)
+        model.likelihood.noise= 1e-4
+        if self.model:
+            model.covar_module.outputscale = self.model.covar_module.outputscale
+            model.covar_module.base_kernel.lengthscale = self.model.covar_module.base_kernel.lengthscale
+        model.train()
+        optimizer = torch.optim.Adam(model.parameters(),
+                                     lr=0.5)  # Includes GaussianLikelihood parameters
 
         # "Loss" for GPs - the marginal log likelihood
-        mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self.model)
-        training_iter = 100
+        mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, model)
+        training_iter = 50
         for i in range(training_iter):
             optimizer.zero_grad()
-            output = self.model(self._x_tensor)
+            output = model(self._x_tensor)
             loss = -mll(output, self._y_tensor)
             loss.backward()
             logging.info('Iter %d/%d - Loss: %.3f   lengthscale: %.3f   noise: %.3f' % (
                 i + 1, training_iter, loss.item(),
-                self.model.covar_module.base_kernel.lengthscale.item(),
-                self.model.likelihood.noise.item()
+                model.covar_module.base_kernel.lengthscale.item(),
+                model.likelihood.noise.item()
             ))
             optimizer.step()
+        self.model = model
     def _find_surrogate_min(self):
         self.model.eval()
 
         def surrogate(x):
-            r = self.model(torch.tensor(x).reshape(1, -1)).mean
+            with torch.no_grad():
+                r = self.model(torch.tensor(x).reshape(1, -1)).mean
             return r[0][0].detach().numpy(), r[0][1:].detach().numpy()
 
-        x_f = minimize(surrogate, self.x, method='L-BFGS-B', jac=True, tol=1e-10)
+        x_f = minimize(surrogate, self.x, method='BFGS', jac=True, tol=self.tol*0.01)
         return x_f.x
 
     def step(self):
@@ -85,7 +93,7 @@ class GPOPT:
         self.train_x += [torch.tensor(x)]
         self.train_y += [r]
         print(f"f = {y} max_grad = {(dy ** 2).max() ** 0.5}")
-        if ((dy**2).max()**0.5 < self.tol).all():
+        if ((dy ** 2).max() ** 0.5 < self.tol).all():
             print(f"converged @ {x}")
             return True
         if y > self.last_y:

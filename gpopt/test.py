@@ -1,6 +1,6 @@
 import numpy as np
 
-from utils import func_with_grad
+from gpopt.utils import func_with_grad
 from gpopt.optimizer import GPOPT
 
 x0 = np.random.rand(100)
