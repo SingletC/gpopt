@@ -10,7 +10,7 @@ python -m pip install .
 ```bash
 python -m gpopt.test
 ````
-###usage:
+### usage:
 ```python
 
 from gpopt.optimizer import GPOPT
