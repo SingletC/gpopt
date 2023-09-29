@@ -4,7 +4,7 @@ import torch
 import gpytorch
 import numpy as np
 from scipy.optimize import minimize
-
+from gpytorch.constraints import GreaterThan
 from gpopt.utils import func_wraper
 
 __all__ = ['GPOPT']
@@ -35,8 +35,8 @@ class GPOPT:
         self.last_y = np.inf
         self.last_x = x0
         self.len_x = len(x0)
-        self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(noise_constraint=None,
-            num_tasks=self.len_x + 1)  # Value + Derivative
+        self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(noise_constraint=GreaterThan(1e-7),
+                                                                           num_tasks=self.len_x + 1)  # Value + Derivative
 
     @property
     def _x_tensor(self):
@@ -49,8 +49,9 @@ class GPOPT:
     def _train(self):
 
         model = GPModelWithDerivatives(self._x_tensor, self._y_tensor, self.likelihood)
-        model.mean_module.constant = torch.nn.Parameter(self._y_tensor[:, 0].mean()+1.0)
-        model.likelihood.noise= 1e-4
+        model.mean_module.constant = torch.nn.Parameter(
+            self._y_tensor[:, 0].min() + abs(self._y_tensor[:, 0].min()) * 1.01)
+        model.mean_module.constant.requires_grad = False
         if self.model:
             model.covar_module.outputscale = self.model.covar_module.outputscale
             model.covar_module.base_kernel.lengthscale = self.model.covar_module.base_kernel.lengthscale
@@ -73,6 +74,7 @@ class GPOPT:
             ))
             optimizer.step()
         self.model = model
+
     def _find_surrogate_min(self):
         self.model.eval()
 
@@ -81,7 +83,7 @@ class GPOPT:
                 r = self.model(torch.tensor(x).reshape(1, -1)).mean
             return r[0][0].detach().numpy(), r[0][1:].detach().numpy()
 
-        x_f = minimize(surrogate, self.x, method='BFGS', jac=True, tol=self.tol*0.01)
+        x_f = minimize(surrogate, self.x, method='BFGS', jac=True, tol=self.tol * 0.1)
         return x_f.x
 
     def step(self):
@@ -106,8 +108,18 @@ class GPOPT:
         self.x = self._find_surrogate_min()
         return False
 
-    def optimize(self):
+    def optimize(self, dump=None):
         while True:
             if self.step():
                 break
         return self.x
+
+    def __reduce__(self):
+        return self._load, (self.train_x, self.train_y, self.tol, self.x0)
+
+    @staticmethod
+    def _load(train_x, train_y, tol, x0):
+        new_cls = GPOPT(lambda x: x, x0, tol)
+        new_cls.train_x = train_x
+        new_cls.train_y = train_y
+        return new_cls

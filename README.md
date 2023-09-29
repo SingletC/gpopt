@@ -20,5 +20,23 @@ import numpy as np
 x0 = np.random.rand(100)
 opt = GPOPT(func_with_grad, x0,tol = 1e-2)
 xf = opt.optimize()
-
+# dump opt for debug
+import pickle
+with open('opt.pkl', 'wb') as f:
+    pickle.dump(opt, f)
+```
+### advanced usage:
+#### step by step optimization:
+```python
+from gpopt.optimizer import GPOPT
+from gpopt.utils import func_with_grad
+import numpy as np
+import pickle
+x0 = np.random.rand(100)
+opt = GPOPT(func_with_grad, x0,tol = 1e-2)
+for i in range(5):
+    opt.step()
+    ### do thing here. e.g., dump the opt for debug.
+    with open(f'opt_{i}.pkl', 'wb') as f:
+        pickle.dump(opt, f)
 ```
