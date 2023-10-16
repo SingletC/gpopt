@@ -4,9 +4,9 @@ import torch
 import gpytorch
 import numpy as np
 from scipy.optimize import minimize
-from gpytorch.constraints import GreaterThan
+from gpytorch.constraints import Interval
 from gpopt.utils import func_wraper
-
+torch.set_default_tensor_type(torch.DoubleTensor)
 __all__ = ['GPOPT']
 
 
@@ -35,7 +35,7 @@ class GPOPT:
         self.last_y = np.inf
         self.last_x = x0
         self.len_x = len(x0)
-        self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(noise_constraint=GreaterThan(1e-7),
+        self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(noise_constraint=Interval(1e-8,1e-7),
                                                                            num_tasks=self.len_x + 1)  # Value + Derivative
 
     @property
@@ -50,7 +50,7 @@ class GPOPT:
 
         model = GPModelWithDerivatives(self._x_tensor, self._y_tensor, self.likelihood)
         model.mean_module.constant = torch.nn.Parameter(
-            self._y_tensor[:, 0].min() + abs(self._y_tensor[:, 0].min()) * 1.01)
+            self._y_tensor[:, 0].min())
         model.mean_module.constant.requires_grad = False
         if self.model:
             model.covar_module.outputscale = self.model.covar_module.outputscale
@@ -83,7 +83,9 @@ class GPOPT:
                 r = self.model(torch.tensor(x).reshape(1, -1)).mean
             return r[0][0].detach().numpy(), r[0][1:].detach().numpy()
 
-        x_f = minimize(surrogate, self.x, method='BFGS', jac=True, tol=self.tol * 0.1)
+        x_f = minimize(surrogate, self.x, method='BFGS', jac=True, tol=self.tol * 0.75)
+        if not x_f.success:
+            print(x_f.message)
         return x_f.x
 
     def step(self):
