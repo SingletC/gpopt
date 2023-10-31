@@ -1,6 +1,6 @@
 import io
 import pickle
-from pickle import dumps
+from typing import Tuple
 
 import numpy as np
 
@@ -21,6 +21,21 @@ class GPOptTest(TestCase):
     def test_orth_func(self):
         x0 = np.random.rand(10)
         opt = GPOPT(func_with_grad, x0, tol=1e-4)
+        xf = opt.optimize()
+
+    def test_analy_prior(self):
+        x0 = np.random.rand(10)
+
+        def example_analytic_prior_func(x) -> Tuple[float, np.ndarray]:
+            """
+            this is demo of use self define analytic prior function
+            it should take a vector x and return a tuple of (value, grad)
+            :param x: np.ndarray
+            :return: value: float, grad : np.ndarray
+            """
+            return np.sum(x ** 2), 2 * x
+
+        opt = GPOPT(rosenbrock, x0, tol=1e-4,analytic_prior=example_analytic_prior_func)
         xf = opt.optimize()
 
     def test_dump(self):

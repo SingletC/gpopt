@@ -1,19 +1,63 @@
 import logging
+from typing import Callable, Optional, Tuple
 
 import torch
 import gpytorch
 import numpy as np
+from gpytorch.means import ConstantMeanGrad
 from scipy.optimize import minimize
 from gpytorch.constraints import Interval
 from gpopt.utils import func_wraper
+
 torch.set_default_tensor_type(torch.DoubleTensor)
 __all__ = ['GPOPT']
 
+AnalyticFunctionType = Callable[[np.array], Tuple[float,np.array]]
+
+
+class AnalyticGradMean(gpytorch.means.Mean):
+    def __init__(self, func: AnalyticFunctionType, batch_shape=torch.Size(), **kwargs):
+        """
+
+        :param func:
+        :param batch_shape:
+        :param kwargs:
+        """
+        super(AnalyticGradMean, self).__init__()
+        self.batch_shape = batch_shape
+        self.register_parameter(name="constant",
+                                parameter=torch.nn.Parameter(torch.zeros(*batch_shape, 1)))  # auto shift
+        self.func = self.func_wrap(func)
+
+    def forward(self, input):
+        batch_shape = torch.broadcast_shapes(self.batch_shape, input.shape[:-2])
+        mean = self.constant.unsqueeze(-1).expand(*batch_shape, input.size(-2), input.size(-1) + 1).contiguous()
+        mean[..., 1:] = 0
+        f = self.func(input)
+        mean[..., :] += f
+        return mean
+
+    @staticmethod
+    def func_wrap(func: AnalyticFunctionType):
+        @torch.no_grad()
+        def f(x):
+            x_np = x.detach().numpy()
+            r = np.empty((len(x_np), len(x_np[0]) + 1))
+            for i in range(len(x_np)):
+                value, grad = func(x_np[i])
+                r[i] = [value] + list(grad)
+
+            return torch.tensor(r)
+        return f
+
 
 class GPModelWithDerivatives(gpytorch.models.ExactGP):
-    def __init__(self, train_x, train_y, likelihood):
+    def __init__(self, train_x, train_y, likelihood, analytic_prior: Optional[AnalyticFunctionType] = None):
         super(GPModelWithDerivatives, self).__init__(train_x, train_y, likelihood)
-        self.mean_module = gpytorch.means.ConstantMeanGrad()
+        if analytic_prior:
+            self.mean_module = AnalyticGradMean(analytic_prior)
+        else:
+            self.mean_module = gpytorch.means.ConstantMeanGrad()
         self.base_kernel = gpytorch.kernels.RBFKernelGrad()
         self.covar_module = gpytorch.kernels.ScaleKernel(self.base_kernel)
 
@@ -24,7 +68,7 @@ class GPModelWithDerivatives(gpytorch.models.ExactGP):
 
 
 class GPOPT:
-    def __init__(self, f, x0, tol=1e-6):
+    def __init__(self, f, x0, tol=1e-6, analytic_prior=None):
         self.train_x = []
         self.train_y = []
         self.model = None
@@ -35,7 +79,8 @@ class GPOPT:
         self.last_y = np.inf
         self.last_x = x0
         self.len_x = len(x0)
-        self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(noise_constraint=Interval(1e-8,1e-7),
+        self.analytic_prior = analytic_prior
+        self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(noise_constraint=Interval(1e-8, 1e-7),
                                                                            num_tasks=self.len_x + 1)  # Value + Derivative
 
     @property
@@ -48,7 +93,7 @@ class GPOPT:
 
     def _train(self):
 
-        model = GPModelWithDerivatives(self._x_tensor, self._y_tensor, self.likelihood)
+        model = GPModelWithDerivatives(self._x_tensor, self._y_tensor, self.likelihood,analytic_prior=self.analytic_prior)
         model.mean_module.constant = torch.nn.Parameter(
             self._y_tensor[:, 0].min())
         model.mean_module.constant.requires_grad = False
