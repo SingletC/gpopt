@@ -7,8 +7,8 @@ import numpy as np
 from gpytorch.means import ConstantMeanGrad
 from scipy.optimize import minimize
 from gpytorch.constraints import Interval
-from gpopt.utils import func_wraper
-
+from gpopt.utils import func_wraper, tensor_to_hashable
+from functools import lru_cache
 torch.set_default_tensor_type(torch.DoubleTensor)
 __all__ = ['GPOPT']
 
@@ -39,12 +39,15 @@ class AnalyticGradMean(gpytorch.means.Mean):
 
     @staticmethod
     def func_wrap(func: AnalyticFunctionType):
-        @torch.no_grad()
+        @lru_cache
+        def f_(x):
+            return func(np.array(x))
+
         def f(x):
             x_np = x.detach().numpy()
             r = np.empty((len(x_np), len(x_np[0]) + 1))
             for i in range(len(x_np)):
-                value, grad = func(x_np[i])
+                value, grad = f_(tensor_to_hashable(x_np[i]))
                 r[i] = [value] + list(grad)
 
             return torch.tensor(r)
