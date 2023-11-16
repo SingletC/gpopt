@@ -2,6 +2,7 @@ import io
 import pickle
 from typing import Tuple
 
+import gpytorch
 import numpy as np
 
 from gpopt.utils import func_with_grad, rosenbrock
@@ -35,9 +36,21 @@ class GPOptTest(TestCase):
             """
             return np.sum(x ** 2), 2 * x
 
-        opt = GPOPT(rosenbrock, x0, tol=1e-4,analytic_prior=example_analytic_prior_func)
+        opt = GPOPT(rosenbrock, x0, tol=1e-4, analytic_prior=example_analytic_prior_func)
         xf = opt.optimize()
 
+    def test_self_define_kernel(self):
+        """
+        this is demo of use self define kernel function(rbf as exmaple)
+        simply herit from gpytorch.kernels.Kernel and redefine base_kernel attribute
+        :return:
+        """
+        from gpopt.optimizer import GPModelWithDerivatives
+        class RBFGPWithDerivatives(GPModelWithDerivatives):
+            base_kernel = gpytorch.kernels.RBFKernelGrad()
+
+        opt = GPOPT(rosenbrock, np.random.rand(10), tol=1e-4, model=RBFGPWithDerivatives)
+        xf = opt.optimize()
     def test_dump(self):
         x0 = np.random.rand(10)
         opt = GPOPT(func_with_grad, x0, tol=0.1)

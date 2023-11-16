@@ -4,15 +4,16 @@ from typing import Callable, Optional, Tuple
 import torch
 import gpytorch
 import numpy as np
-from gpytorch.means import ConstantMeanGrad
+from gpytorch.models import GP
 from scipy.optimize import minimize
 from gpytorch.constraints import Interval
 from gpopt.utils import func_wraper, tensor_to_hashable
 from functools import lru_cache
+
 torch.set_default_tensor_type(torch.DoubleTensor)
 __all__ = ['GPOPT']
 
-AnalyticFunctionType = Callable[[np.array], Tuple[float,np.array]]
+AnalyticFunctionType = Callable[[np.array], Tuple[float, np.array]]
 
 
 class AnalyticGradMean(gpytorch.means.Mean):
@@ -55,13 +56,14 @@ class AnalyticGradMean(gpytorch.means.Mean):
 
 
 class GPModelWithDerivatives(gpytorch.models.ExactGP):
+    base_kernel = gpytorch.kernels.RBFKernelGrad()
+
     def __init__(self, train_x, train_y, likelihood, analytic_prior: Optional[AnalyticFunctionType] = None):
         super(GPModelWithDerivatives, self).__init__(train_x, train_y, likelihood)
         if analytic_prior:
             self.mean_module = AnalyticGradMean(analytic_prior)
         else:
             self.mean_module = gpytorch.means.ConstantMeanGrad()
-        self.base_kernel = gpytorch.kernels.RBFKernelGrad()
         self.covar_module = gpytorch.kernels.ScaleKernel(self.base_kernel)
 
     def forward(self, x):
@@ -71,7 +73,7 @@ class GPModelWithDerivatives(gpytorch.models.ExactGP):
 
 
 class GPOPT:
-    def __init__(self, f, x0, tol=1e-6, analytic_prior=None):
+    def __init__(self, f, x0, tol=1e-6, analytic_prior=None, model: Optional[type(GP)] = None):
         self.train_x = []
         self.train_y = []
         self.model = None
@@ -96,7 +98,8 @@ class GPOPT:
 
     def _train(self):
 
-        model = GPModelWithDerivatives(self._x_tensor, self._y_tensor, self.likelihood,analytic_prior=self.analytic_prior)
+        model = GPModelWithDerivatives(self._x_tensor, self._y_tensor, self.likelihood,
+                                       analytic_prior=self.analytic_prior)
         model.mean_module.constant = torch.nn.Parameter(
             self._y_tensor[:, 0].min())
         model.mean_module.constant.requires_grad = False
