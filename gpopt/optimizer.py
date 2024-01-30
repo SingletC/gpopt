@@ -73,7 +73,20 @@ class GPModelWithDerivatives(gpytorch.models.ExactGP):
 
 
 class GPOPT:
-    def __init__(self, f, x0, tol=1e-6, analytic_prior=None, model: Optional[type(GP)] = None):
+    def __init__(self, f, x0, tol=1e-6, analytic_prior=None, model: Optional[type(GP)] = None,
+                 last_n_train:int = 0):
+        """
+        The constructor for the GPOPT class.
+
+        Parameters:
+        :param f:  (function): The function to be optimized.
+        :param x0:  (array): The initial point for the optimization.
+        :param tol: (float): The tolerance for the optimization. The optimization stops when the gradient norm is less than tol.
+        :param analytic_prior:  (function): An optional analytic prior for the mean of the GP.
+        :param model: (GPModelWithDerivatives): An optional initial model for the GP.
+        :param last_n_train: (int): The number of last n steps points to consider. 0 to use all.
+                                    good for large D and large y change
+        """
         self.train_x = []
         self.train_y = []
         self.model = None
@@ -83,6 +96,7 @@ class GPOPT:
         self.x = x0
         self.last_y = np.inf
         self.last_x = x0
+        self.last_n_train = last_n_train
         self.len_x = len(x0)
         self.analytic_prior = analytic_prior
         self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(noise_constraint=Interval(1e-8, 1e-7),
@@ -90,11 +104,13 @@ class GPOPT:
 
     @property
     def _x_tensor(self):
-        return torch.stack(self.train_x).reshape(-1, self.len_x)
+        sub_train = self.train_x[-self.last_n_train:] if self.last_n_train else self.train_x
+        return torch.stack(sub_train).reshape(-1, self.len_x)
 
     @property
     def _y_tensor(self):
-        return torch.stack(self.train_y).reshape(-1, self.len_x + 1)
+        sub_train = self.train_y[-self.last_n_train:] if self.last_n_train else self.train_y
+        return torch.stack(sub_train).reshape(-1, self.len_x + 1)
 
     def _train(self):
 
@@ -126,15 +142,13 @@ class GPOPT:
             optimizer.step()
         self.model = model
 
-    def _find_surrogate_min(self):
+    def eval_surrogate(self, x):
         self.model.eval()
-
-        def surrogate(x):
-            with torch.no_grad():
-                r = self.model(torch.tensor(x).reshape(1, -1)).mean
-            return r[0][0].detach().numpy(), r[0][1:].detach().numpy()
-
-        x_f = minimize(surrogate, self.x, method='BFGS', jac=True, tol=self.tol * 0.75)
+        with torch.no_grad():
+            r = self.model(torch.tensor(x).reshape(1, -1)).mean
+        return r[0][0].detach().numpy(), r[0][1:].detach().numpy()
+    def _find_surrogate_min(self):
+        x_f = minimize(self.eval_surrogate, self.x, method='BFGS', jac=True, tol=self.tol * 0.75)
         if not x_f.success:
             print(x_f.message)
         return x_f.x
