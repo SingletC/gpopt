@@ -64,9 +64,13 @@ class MaternKernelGrad(MaternKernel):
             x1_ = x1.div(self.lengthscale)
             x2_ = x2.div(self.lengthscale)
             # Form all possible rank-1 products for the gradient and Hessian blocks
-            scaled_diff = x1_.view(*batch_shape, n1, 1, d) - x1_.view(*batch_shape, 1, n2, d)
+            outer = x1.view(*batch_shape, n1, 1, d) - x2.view(*batch_shape, 1, n2, d)
+            outer = torch.transpose(outer, -1, -2).contiguous()
+
+            # scaled_diff = x1_.view(*batch_shape, n1, 1, d) - x2_.view(*batch_shape, 1, n2, d)
             # scaled_diff = diff / self.lengthscale.unsqueeze(-2)
-            scaled_diff = torch.transpose(scaled_diff, -1, -2).contiguous()
+            # scaled_diff = torch.transpose(scaled_diff, -1, -2).contiguous()
+
 
             # 1) Kernel block
             radius_scale = self.covar_dist(x1_, x2_, square_dist=True, **params)
@@ -75,24 +79,42 @@ class MaternKernelGrad(MaternKernel):
             K_11 = (1.0 + root_five * radius_scale + 5.0 / 3.0 * radius2_scale) * torch.exp(-root_five * radius_scale)
             K[..., :n1, :n2] = K_11
             # 2) First gradient block
+            outer1 = outer.view(*batch_shape, n1, n2 * d)
+            # diff = torch.transpose(outer1, -1, -2).contiguous()
             radius = self.covar_dist(x1, x2, square_dist=True, **params)
             radius2 = radius**2
-            # p =  5/(3*l**2)*(x/l-y/l)*(l+sqrt(5)*r)
-            prefactor_jac = 5. / (3. * self.lengthscale ** 2) * scaled_diff * (self.lengthscale + root_five * radius)
-            prefactor_jac = prefactor_jac.view(*batch_shape, n1, n2 * d)
+            prefactor_jac = 5. / (3. * self.lengthscale ** 2) * (self.lengthscale + root_five * radius)
+            prefactor_jac = prefactor_jac.repeat([*([1] * (n_batch_dims + 1)), d])
+            prefactor_jac = (prefactor_jac* outer1).view(*batch_shape, n1, n2 * d)
             # jac = p*exp(-sqrt(5)*r/l)
-            jac = prefactor_jac * torch.exp(-root_five * radius/ self.lengthscale)
+            jac = prefactor_jac * torch.exp(-root_five * radius/self.lengthscale).repeat([*([1] * (n_batch_dims + 1)), d])
             K[..., :n1, n2:] = jac
 
             # 3) Second gradient block
             # the same
-            K[..., n1:, :n2] = -jac.T.clone()
+            outer2 = outer.transpose(-1, -3).reshape(*batch_shape, n2, n1 * d)
+            outer2 = -outer2.transpose(-1, -2)
+            prefactor_jac2 = 5. / (3. * self.lengthscale ** 2) * (self.lengthscale + root_five * radius)
+            prefactor_jac2 = prefactor_jac2.repeat([*([1] * n_batch_dims), d, 1])
+            prefactor_jac2 = (prefactor_jac2 * outer2).view(*batch_shape, n1*d, n2)
+            jac2 = prefactor_jac2 * torch.exp(-root_five * radius.T / self.lengthscale).repeat([*([1] * n_batch_dims), d, 1])
+            K[..., n1:, :n2] = jac2
 
             # 4) Hessian block
-            #TODO
-            raise NotImplementedError
-
-
+            # TODO there is error compared to AD, possible bug
+            # outer3 diff x diff  : nd x nd
+            outer3 = outer1.repeat([*([1] * n_batch_dims), d, 1]) * outer2.repeat([*([1] * (n_batch_dims + 1)), d])
+            # P = 5. * outer3
+            P = 5. * outer3
+            pre_factor = 5. / (3. * self.lengthscale ** 4)
+            hess__block = (self.lengthscale + root_five * radius) * self.lengthscale
+            # hess__block = (torch.eye(d) * (self.lengthscale + root_five * radius) * self.lengthscale)
+            kp = KroneckerProductLinearOperator(torch.eye(d, d, device=x1.device, dtype=x1.dtype).repeat(*batch_shape, 1, 1),
+                                                hess__block,)
+            prefactor = (kp.to_dense() - P) * pre_factor
+            exp_ = torch.exp(-root_five * radius / self.lengthscale)
+            exp_ = KroneckerProductLinearOperator(torch.ones(d, d, device=x1.device, dtype=x1.dtype).repeat(*batch_shape, 1, 1),exp_,)
+            K[..., n1:, n2:] = (prefactor * exp_).to_dense()
             # Symmetrize for stability
             if n1 == n2 and torch.eq(x1, x2).all():
                 K = 0.5 * (K.transpose(-1, -2) + K)
@@ -108,7 +130,7 @@ class MaternKernelGrad(MaternKernel):
             if not (n1 == n2 and torch.eq(x1, x2).all()):
                 raise RuntimeError("diag=True only works when x1 == x2")
 
-            kernel_diag = super(RBFKernelGrad, self).forward(x1, x2, diag=True)
+            kernel_diag = super(MaternKernelGrad, self).forward(x1, x2, diag=True)
             grad_diag = torch.ones(*batch_shape, n2, d, device=x1.device, dtype=x1.dtype) / self.lengthscale.pow(2)
             grad_diag = grad_diag.transpose(-1, -2).reshape(*batch_shape, n2 * d)
             k_diag = torch.cat((kernel_diag, grad_diag), dim=-1)
