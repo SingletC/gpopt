@@ -61,8 +61,6 @@ class MaternKernelGrad(MaternKernel):
 
         if not diag:
             # Scale the inputs by the lengthscale (for stability)
-            x1_ = x1.div(self.lengthscale)
-            x2_ = x2.div(self.lengthscale)
             # Form all possible rank-1 products for the gradient and Hessian blocks
             outer = x1.view(*batch_shape, n1, 1, d) - x2.view(*batch_shape, 1, n2, d)
             outer = torch.transpose(outer, -1, -2).contiguous()
@@ -73,16 +71,16 @@ class MaternKernelGrad(MaternKernel):
 
 
             # 1) Kernel block
-            radius_scale = self.covar_dist(x1_, x2_, square_dist=True, **params)
-            radius2_scale = radius_scale**2
-            root_five = 2.23606798
-            K_11 = (1.0 + root_five * radius_scale + 5.0 / 3.0 * radius2_scale) * torch.exp(-root_five * radius_scale)
+            radius = self.covar_dist(x1, x2, square_dist=False, **params)
+            radius_scale = radius / self.lengthscale
+            radius2_scale = radius**2
+            root_five = 2.23606797749979
+            K_11 = ((1.0 + root_five * radius_scale + 5.0 / 3.0 * radius2_scale)
+                    * torch.exp(-root_five * radius_scale))
             K[..., :n1, :n2] = K_11
             # 2) First gradient block
             outer1 = outer.view(*batch_shape, n1, n2 * d)
             # diff = torch.transpose(outer1, -1, -2).contiguous()
-            radius = self.covar_dist(x1, x2, square_dist=True, **params)
-            radius2 = radius**2
             prefactor_jac = 5. / (3. * self.lengthscale ** 2) * (self.lengthscale + root_five * radius)
             prefactor_jac = prefactor_jac.repeat([*([1] * (n_batch_dims + 1)), d])
             prefactor_jac = (prefactor_jac* outer1).view(*batch_shape, n1, n2 * d)
@@ -93,10 +91,10 @@ class MaternKernelGrad(MaternKernel):
             # 3) Second gradient block
             # the same
             outer2 = outer.transpose(-1, -3).reshape(*batch_shape, n2, n1 * d)
-            outer2 = -outer2.transpose(-1, -2)
+            outer2 = outer2.transpose(-1, -2)
             prefactor_jac2 = 5. / (3. * self.lengthscale ** 2) * (self.lengthscale + root_five * radius)
             prefactor_jac2 = prefactor_jac2.repeat([*([1] * n_batch_dims), d, 1])
-            prefactor_jac2 = (prefactor_jac2 * outer2).view(*batch_shape, n1*d, n2)
+            prefactor_jac2 = (prefactor_jac2 * -outer2).view(*batch_shape, n1*d, n2)
             jac2 = prefactor_jac2 * torch.exp(-root_five * radius.T / self.lengthscale).repeat([*([1] * n_batch_dims), d, 1])
             K[..., n1:, :n2] = jac2
 
@@ -109,8 +107,8 @@ class MaternKernelGrad(MaternKernel):
             pre_factor = 5. / (3. * self.lengthscale ** 4)
             hess__block = (self.lengthscale + root_five * radius) * self.lengthscale
             # hess__block = (torch.eye(d) * (self.lengthscale + root_five * radius) * self.lengthscale)
-            kp = KroneckerProductLinearOperator(torch.eye(d, d, device=x1.device, dtype=x1.dtype).repeat(*batch_shape, 1, 1),
-                                                hess__block,)
+            kp = KroneckerProductLinearOperator(torch.eye(d, d, device=x1.device, dtype=x1.dtype).repeat(*batch_shape, 1, 1),hess__block,
+                                                )
             prefactor = (kp.to_dense() - P) * pre_factor
             exp_ = torch.exp(-root_five * radius / self.lengthscale)
             exp_ = KroneckerProductLinearOperator(torch.ones(d, d, device=x1.device, dtype=x1.dtype).repeat(*batch_shape, 1, 1),exp_,)
