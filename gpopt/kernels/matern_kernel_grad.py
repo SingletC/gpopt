@@ -79,27 +79,28 @@ class MaternKernelGrad(MaternKernel):
                     * torch.exp(-root_five * radius_scale))
             K[..., :n1, :n2] = K_11
             # 2) First gradient block
+            # TODO there is error compared to AD, possible bug
             outer1 = outer.view(*batch_shape, n1, n2 * d)
             # diff = torch.transpose(outer1, -1, -2).contiguous()
-            prefactor_jac = 5. / (3. * self.lengthscale ** 2) * (self.lengthscale + root_five * radius)
+            prefactor_jac = 5. / (3. * self.lengthscale ** 3) * (self.lengthscale + root_five * radius)
             prefactor_jac = prefactor_jac.repeat([*([1] * (n_batch_dims + 1)), d])
-            prefactor_jac = (prefactor_jac* outer1).view(*batch_shape, n1, n2 * d)
+            prefactor_jac = (prefactor_jac * outer1).view(*batch_shape, n1, n2 * d)
             # jac = p*exp(-sqrt(5)*r/l)
             jac = prefactor_jac * torch.exp(-root_five * radius/self.lengthscale).repeat([*([1] * (n_batch_dims + 1)), d])
             K[..., :n1, n2:] = jac
 
             # 3) Second gradient block
+            # TODO there is error compared to AD, possible bug
             # the same
             outer2 = outer.transpose(-1, -3).reshape(*batch_shape, n2, n1 * d)
             outer2 = outer2.transpose(-1, -2)
-            prefactor_jac2 = 5. / (3. * self.lengthscale ** 2) * (self.lengthscale + root_five * radius)
+            prefactor_jac2 = 5. / (3. * self.lengthscale ** 3) * (self.lengthscale + root_five * radius)
             prefactor_jac2 = prefactor_jac2.repeat([*([1] * n_batch_dims), d, 1])
             prefactor_jac2 = (prefactor_jac2 * -outer2).view(*batch_shape, n1*d, n2)
-            jac2 = prefactor_jac2 * torch.exp(-root_five * radius.T / self.lengthscale).repeat([*([1] * n_batch_dims), d, 1])
+            jac2 = prefactor_jac2 * torch.exp(-root_five * radius / self.lengthscale).repeat([*([1] * n_batch_dims), d, 1])
             K[..., n1:, :n2] = jac2
 
             # 4) Hessian block
-            # TODO there is error compared to AD, possible bug
             # outer3 diff x diff  : nd x nd
             outer3 = outer1.repeat([*([1] * n_batch_dims), d, 1]) * outer2.repeat([*([1] * (n_batch_dims + 1)), d])
             # P = 5. * outer3
