@@ -38,17 +38,6 @@ class MaternKernelGrad(MaternKernel):
         ard_num_dims and batch_shape arguments.
 
     Example:
-        >>> x = torch.randn(10, 5)
-        >>> # Non-batch: Simple option
-        >>> covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernelGrad())
-        >>> covar = covar_module(x)  # Output: LinearOperator of size (60 x 60), where 60 = n * (d + 1)
-        >>>
-        >>> batch_x = torch.randn(2, 10, 5)
-        >>> # Batch: Simple option
-        >>> covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernelGrad())
-        >>> # Batch: different lengthscale for each batch
-        >>> covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernelGrad(batch_shape=torch.Size([2])))
-        >>> covar = covar_module(x)  # Output: LinearOperator of size (2 x 60 x 60)
     """
 
     def forward(self, x1, x2, diag=False, **params):
@@ -72,31 +61,28 @@ class MaternKernelGrad(MaternKernel):
 
             # 1) Kernel block
             radius = self.covar_dist(x1, x2, square_dist=False, **params)
-            radius_scale = radius / self.lengthscale
-            radius2_scale = radius**2
+            radius_scale = self.covar_dist(x1/self.lengthscale, x2/self.lengthscale ,square_dist=False, **params)
+            radius2_scale = radius_scale**2
             root_five = 2.23606797749979
             K_11 = ((1.0 + root_five * radius_scale + 5.0 / 3.0 * radius2_scale)
                     * torch.exp(-root_five * radius_scale))
             K[..., :n1, :n2] = K_11
             # 2) First gradient block
-            # TODO there is error compared to AD, possible bug
             outer1 = outer.view(*batch_shape, n1, n2 * d)
-            # diff = torch.transpose(outer1, -1, -2).contiguous()
             prefactor_jac = 5. / (3. * self.lengthscale ** 3) * (self.lengthscale + root_five * radius)
             prefactor_jac = prefactor_jac.repeat([*([1] * (n_batch_dims + 1)), d])
-            prefactor_jac = (prefactor_jac * outer1).view(*batch_shape, n1, n2 * d)
+            prefactor_jac = (prefactor_jac * outer1)
             # jac = p*exp(-sqrt(5)*r/l)
             jac = prefactor_jac * torch.exp(-root_five * radius/self.lengthscale).repeat([*([1] * (n_batch_dims + 1)), d])
             K[..., :n1, n2:] = jac
 
             # 3) Second gradient block
-            # TODO there is error compared to AD, possible bug
             # the same
             outer2 = outer.transpose(-1, -3).reshape(*batch_shape, n2, n1 * d)
             outer2 = outer2.transpose(-1, -2)
             prefactor_jac2 = 5. / (3. * self.lengthscale ** 3) * (self.lengthscale + root_five * radius)
             prefactor_jac2 = prefactor_jac2.repeat([*([1] * n_batch_dims), d, 1])
-            prefactor_jac2 = (prefactor_jac2 * -outer2).view(*batch_shape, n1*d, n2)
+            prefactor_jac2 = (prefactor_jac2 * -outer2)
             jac2 = prefactor_jac2 * torch.exp(-root_five * radius / self.lengthscale).repeat([*([1] * n_batch_dims), d, 1])
             K[..., n1:, :n2] = jac2
 
