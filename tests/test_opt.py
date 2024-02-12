@@ -8,6 +8,13 @@ import numpy as np
 from gpopt.utils import func_with_grad, rosenbrock
 from gpopt.optimizer import GPOPT
 from unittest import TestCase
+# for debugger
+# import sys
+# import logging
+# logger = logging.getLogger()
+# logger.level = logging.INFO
+# stream_handler = logging.StreamHandler(sys.stdout)
+# logger.addHandler(stream_handler)
 
 
 class GPOptTest(TestCase):
@@ -16,12 +23,13 @@ class GPOptTest(TestCase):
 
     def test_rosenbrock(self):
         x0 = np.random.rand(10)
-        opt = GPOPT(rosenbrock, x0, tol=1e-4)
+        opt = GPOPT(rosenbrock, x0, tol=1e-6)
         xf = opt.optimize()
+        print(len(opt.train_x))
 
     def test_orth_func(self):
         x0 = np.random.rand(10)
-        opt = GPOPT(func_with_grad, x0, tol=1e-4)
+        opt = GPOPT(func_with_grad, x0, tol=1e-6)
         xf = opt.optimize()
 
     def test_analy_prior(self):
@@ -36,8 +44,9 @@ class GPOptTest(TestCase):
             """
             return np.sum(x ** 2), 2 * x
 
-        opt = GPOPT(rosenbrock, x0, tol=1e-4, analytic_prior=example_analytic_prior_func)
+        opt = GPOPT(rosenbrock, x0, tol=1e-6, analytic_prior=example_analytic_prior_func)
         xf = opt.optimize()
+        print(len(opt.train_x))
 
     def test_self_define_kernel(self):
         """
@@ -60,3 +69,8 @@ class GPOptTest(TestCase):
             mem_file.seek(0)
             data = mem_file.read()
             opt_new = pickle.loads(data)
+
+# if __name__ == '__main__':
+#     test = GPOptTest()
+#     test.setUp()
+#     test.test_rosenbrock()
