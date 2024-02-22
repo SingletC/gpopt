@@ -10,10 +10,9 @@ setup(
     author_email='',
     description='',
     install_requires=['numpy',
-                        'scipy',
+                      'scipy',
                       'gpytorch',
-                        'torch',
+                      'torch',
 
-
-    ]
+                      ]
 )
