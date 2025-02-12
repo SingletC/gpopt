@@ -19,7 +19,7 @@ from gpytorch.settings import max_cholesky_size
 max_cholesky_size.__enter__(max_cholesky_size(1e12))
 
 class AnalyticGradMean(gpytorch.means.Mean):
-    def __init__(self, func: AnalyticFunctionType, batch_shape=torch.Size(), **kwargs):
+    def __init__(self, func: AnalyticFunctionType, cache_prior, batch_shape=torch.Size(), **kwargs):
         """
 
         :param func:
@@ -30,7 +30,7 @@ class AnalyticGradMean(gpytorch.means.Mean):
         self.batch_shape = batch_shape
         self.register_parameter(name="constant",
                                 parameter=torch.nn.Parameter(torch.zeros(*batch_shape, 1)))  # auto shift
-        self.func = self.func_wrap(func)
+        self.func = self.func_wrap(func) if cache_prior else self.func_wrap_no_cache(func)
 
     def forward(self, input):
         batch_shape = torch.broadcast_shapes(self.batch_shape, input.shape[:-2])
@@ -56,14 +56,30 @@ class AnalyticGradMean(gpytorch.means.Mean):
             return torch.tensor(r)
         return f
 
+    @staticmethod
+    def func_wrap_no_cache(func: AnalyticFunctionType):
+        def f_(x):
+            return func(np.array(x))
+
+        def f(x):
+            x_np = x.detach().numpy()
+            r = np.empty((len(x_np), len(x_np[0]) + 1))
+            for i in range(len(x_np)):
+                value, grad = f_(tensor_to_hashable(x_np[i]))
+                r[i] = [value] + list(grad)
+
+            return torch.tensor(r)
+        return f
+
 
 class GPModelWithDerivatives(gpytorch.models.ExactGP):
     base_kernel = MaternKernelGrad()
     # base_kernel = gpytorch.kernels.RBFKernelGrad()
-    def __init__(self, train_x, train_y, likelihood, analytic_prior: Optional[AnalyticFunctionType] = None):
+    def __init__(self, train_x, train_y, likelihood, analytic_prior: Optional[AnalyticFunctionType] = None,
+                 cache_prior=True):
         super(GPModelWithDerivatives, self).__init__(train_x, train_y, likelihood)
         if analytic_prior:
-            self.mean_module = AnalyticGradMean(analytic_prior)
+            self.mean_module = AnalyticGradMean(analytic_prior,cache_prior)
         else:
             self.mean_module = gpytorch.means.ConstantMeanGrad()
         self.covar_module = ScaleKernel(self.base_kernel)
@@ -76,6 +92,7 @@ class GPModelWithDerivatives(gpytorch.models.ExactGP):
 
 class GPOPT:
     def __init__(self, f, x0, tol=1e-6, analytic_prior=None, model: Optional[type(GP)] = None,
+                 cache_prior=True,
                  last_n_train:int = 0,length_scale:float=1.0):
         """
         The constructor for the GPOPT class.
@@ -102,6 +119,7 @@ class GPOPT:
         self.last_n_train = last_n_train
         self.len_x = len(x0)
         self.analytic_prior = analytic_prior
+        self.cache_prior=cache_prior
         self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(noise_constraint=Interval(1e-9, 1e-7),
                                                                            num_tasks=self.len_x + 1)  # Value + Derivative
         self.length_scale = length_scale
@@ -122,7 +140,7 @@ class GPOPT:
     def _train(self):
 
         model = GPModelWithDerivatives(self._x_tensor, self._y_tensor, self.likelihood,
-                                       analytic_prior=self.analytic_prior)
+                                       analytic_prior=self.analytic_prior,cache_prior=self.cache_prior)
         model.mean_module.constant = torch.nn.Parameter(
             self._y_tensor[:, 0].mean())
         if self.analytic_prior is not None:
