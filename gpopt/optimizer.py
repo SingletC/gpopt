@@ -150,15 +150,16 @@ class GPOPT:
                 model.mean_module.constant = torch.nn.Parameter(torch.Tensor([0.0]))
                 model.mean_module.constant = torch.nn.Parameter(
                     self._y_tensor[-1, 0] - model.mean_module.forward(self._x_tensor[-1].reshape([1,-1]))[0,0])
+
         if self.model:
             model.covar_module.outputscale = self.model.covar_module.outputscale
             model.covar_module.base_kernel.lengthscale = self.model.covar_module.base_kernel.lengthscale
             model.likelihood.noise = self.model.likelihood.noise
             model.covar_module.raw_outputscale = self.model.covar_module.raw_outputscale
         else:
-            model.mean_module.constant.requires_grad = False
             model.covar_module.base_kernel.lengthscale = self.length_scale * torch.ones(self.len_x)
-            model.covar_module.base_kernel.raw_lengthscale.requires_grad = False
+        model.covar_module.base_kernel.raw_lengthscale.requires_grad = False
+        model.mean_module.constant.requires_grad = False
         model.train()
         optimizer = torch.optim.Adam(model.parameters(),
                                      lr=0.5)  # Includes GaussianLikelihood parameters
