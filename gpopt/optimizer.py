@@ -11,6 +11,7 @@ from gpytorch.constraints import Interval
 from gpopt.utils import func_wraper, tensor_to_hashable
 from functools import lru_cache
 from gpopt.kernels.matern_kernel_grad import MaternKernelGrad
+from gpytorch.kernels.rbf_kernel_grad import RBFKernelGrad
 __all__ = ['GPOPT']
 
 AnalyticFunctionType = Callable[[np.array], Tuple[float, np.array]]
@@ -73,7 +74,7 @@ class AnalyticGradMean(gpytorch.means.Mean):
 
 
 class GPModelWithDerivatives(gpytorch.models.ExactGP):
-    base_kernel = MaternKernelGrad()
+    base_kernel = MaternKernelGrad
     # base_kernel = gpytorch.kernels.RBFKernelGrad()
     def __init__(self, train_x, train_y, likelihood, analytic_prior: Optional[AnalyticFunctionType] = None,
                  cache_prior=True):
@@ -82,7 +83,7 @@ class GPModelWithDerivatives(gpytorch.models.ExactGP):
             self.mean_module = AnalyticGradMean(analytic_prior,cache_prior)
         else:
             self.mean_module = gpytorch.means.ConstantMeanGrad()
-        self.covar_module = ScaleKernel(self.base_kernel)
+        self.covar_module = ScaleKernel(self.base_kernel())
 
     def forward(self, x):
         mean_x = self.mean_module(x)
@@ -150,7 +151,7 @@ class GPOPT:
                 model.mean_module.constant = torch.nn.Parameter(
                     self._y_tensor[-1, 0] - model.mean_module.forward(self._x_tensor[-1].reshape([1,-1]))[0,0])
         model.mean_module.constant.requires_grad = False
-        model.covar_module.base_kernel.lengthscale = self.length_scale
+        model.covar_module.base_kernel.lengthscale =  self.length_scale
         model.covar_module.base_kernel.raw_lengthscale.requires_grad = False
         if self.model:
             model.covar_module.outputscale = self.model.covar_module.outputscale
@@ -171,9 +172,9 @@ class GPOPT:
             output = model(self._x_tensor)
             loss = -mll(output, self._y_tensor)
             loss.backward()
-            logging.info('Iter %d/%d - Loss: %.3f   lengthscale: %.3f   noise: %.3f' % (
+            logging.info('Iter %d/%d - Loss: %.3f   lengthscale: %s   noise: %.3f' % (
                 i + 1, training_iter, loss.item(),
-                model.covar_module.base_kernel.lengthscale.item(),
+                str(model.covar_module.base_kernel.lengthscale.detach().numpy()),
                 model.likelihood.noise.item()
             )+str(model.covar_module.raw_outputscale) )
             optimizer.step()
