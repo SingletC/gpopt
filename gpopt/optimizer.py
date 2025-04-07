@@ -5,7 +5,6 @@ import torch
 import gpytorch
 import numpy as np
 from gpytorch.kernels import ScaleKernel
-from gpytorch.kernels import RBFKernelGrad
 from gpytorch.models import GP
 from scipy.optimize import minimize
 from gpytorch.constraints import Interval
@@ -15,10 +14,12 @@ from gpopt.kernels.matern_kernel_grad import MaternKernelGrad
 __all__ = ['GPOPT']
 
 AnalyticFunctionType = Callable[[np.array], Tuple[float, np.array]]
+from gpytorch.settings import max_cholesky_size
 
+max_cholesky_size.__enter__(max_cholesky_size(1e12))
 
 class AnalyticGradMean(gpytorch.means.Mean):
-    def __init__(self, func: AnalyticFunctionType, batch_shape=torch.Size(), **kwargs):
+    def __init__(self, func: AnalyticFunctionType, cache_prior, batch_shape=torch.Size(), **kwargs):
         """
 
         :param func:
@@ -29,7 +30,7 @@ class AnalyticGradMean(gpytorch.means.Mean):
         self.batch_shape = batch_shape
         self.register_parameter(name="constant",
                                 parameter=torch.nn.Parameter(torch.zeros(*batch_shape, 1)))  # auto shift
-        self.func = self.func_wrap(func)
+        self.func = self.func_wrap(func) if cache_prior else self.func_wrap_no_cache(func)
 
     def forward(self, input):
         batch_shape = torch.broadcast_shapes(self.batch_shape, input.shape[:-2])
@@ -55,17 +56,33 @@ class AnalyticGradMean(gpytorch.means.Mean):
             return torch.tensor(r)
         return f
 
+    @staticmethod
+    def func_wrap_no_cache(func: AnalyticFunctionType):
+        def f_(x):
+            return func(np.array(x))
+
+        def f(x):
+            x_np = x.detach().numpy()
+            r = np.empty((len(x_np), len(x_np[0]) + 1))
+            for i in range(len(x_np)):
+                value, grad = f_(tensor_to_hashable(x_np[i]))
+                r[i] = [value] + list(grad)
+
+            return torch.tensor(r)
+        return f
+
 
 class GPModelWithDerivatives(gpytorch.models.ExactGP):
     base_kernel = RBFKernelGrad
     # base_kernel = gpytorch.kernels.RBFKernelGrad()
-    def __init__(self, train_x, train_y, likelihood, analytic_prior: Optional[AnalyticFunctionType] = None):
+    def __init__(self, train_x, train_y, likelihood, analytic_prior: Optional[AnalyticFunctionType] = None,
+                 cache_prior=True):
         super(GPModelWithDerivatives, self).__init__(train_x, train_y, likelihood)
         if analytic_prior:
-            self.mean_module = AnalyticGradMean(analytic_prior)
+            self.mean_module = AnalyticGradMean(analytic_prior,cache_prior)
         else:
             self.mean_module = gpytorch.means.ConstantMeanGrad()
-        self.covar_module = ScaleKernel(self.base_kernel(ard_num_dims=train_x.shape[-1]))
+        self.covar_module = ScaleKernel(self.base_kernel)
 
     def forward(self, x):
         mean_x = self.mean_module(x)
@@ -75,7 +92,8 @@ class GPModelWithDerivatives(gpytorch.models.ExactGP):
 
 class GPOPT:
     def __init__(self, f, x0, tol=1e-6, analytic_prior=None, model: Optional[type(GP)] = None,
-                 last_n_train:int = 0):
+                 cache_prior=True,
+                 last_n_train:int = 0,length_scale:float=1.0):
         """
         The constructor for the GPOPT class.
 
@@ -87,6 +105,7 @@ class GPOPT:
         :param model: (GPModelWithDerivatives): An optional initial model for the GP.
         :param last_n_train: (int): The number of last n steps points to consider. 0 to use all.
                                     good for large D and large y change
+        :param length_scale: (float): The length scale for the GP kernel.
         """
         self.train_x = []
         self.train_y = []
@@ -100,8 +119,10 @@ class GPOPT:
         self.last_n_train = last_n_train
         self.len_x = len(x0)
         self.analytic_prior = analytic_prior
+        self.cache_prior=cache_prior
         self.likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(noise_constraint=Interval(1e-9, 1e-7),
                                                                            num_tasks=self.len_x + 1)  # Value + Derivative
+        self.length_scale = length_scale
 
     @property
     def _x_tensor(self):
@@ -113,12 +134,15 @@ class GPOPT:
         sub_train = self.train_y[-self.last_n_train:] if self.last_n_train else self.train_y
         return torch.stack(sub_train).reshape(-1, self.len_x + 1)
 
+    @property
+    def _best_grad_max(self ):
+        return (self._y_tensor[:,1:]**2).max(-1).values.min()**0.5
     def _train(self):
 
         model = GPModelWithDerivatives(self._x_tensor, self._y_tensor, self.likelihood,
-                                       analytic_prior=self.analytic_prior)
+                                       analytic_prior=self.analytic_prior,cache_prior=self.cache_prior)
         model.mean_module.constant = torch.nn.Parameter(
-            self._y_tensor[-1, 0])
+            self._y_tensor[:, 0].mean())
         if self.analytic_prior is not None:
             # shift the mean to the last point
             with torch.no_grad():
@@ -126,8 +150,7 @@ class GPOPT:
                 model.mean_module.constant = torch.nn.Parameter(
                     self._y_tensor[-1, 0] - model.mean_module.forward(self._x_tensor[-1].reshape([1,-1]))[0,0])
         model.mean_module.constant.requires_grad = False
-        # Initialize lengthscale with correct shape for GPyTorch kernel
-        model.covar_module.base_kernel.lengthscale = torch.ones(1, self.len_x) * 0.5
+        model.covar_module.base_kernel.lengthscale = torch.ones(1, self.len_x) * self.length_scale
         model.covar_module.base_kernel.raw_lengthscale.requires_grad = False
         if self.model:
             model.covar_module.outputscale = self.model.covar_module.outputscale
@@ -136,13 +159,13 @@ class GPOPT:
             model.covar_module.raw_outputscale = self.model.covar_module.raw_outputscale
         model.train()
         optimizer = torch.optim.Adam(model.parameters(),
-                                     lr=0.1)  # Includes GaussianLikelihood parameters
+                                     lr=0.5)  # Includes GaussianLikelihood parameters
 
         # "Loss" for GPs - the marginal log likelihood
         mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, model)
-        training_iter = 50
-        # output = model(self._x_tensor)
-        # loss = -mll(output, self._y_tensor)
+        training_iter = 10
+        output = model(self._x_tensor)
+        loss = -mll(output, self._y_tensor)
         for i in range(training_iter):
             optimizer.zero_grad()
             output = model(self._x_tensor)
@@ -162,8 +185,10 @@ class GPOPT:
             r = self.model(torch.tensor(x).reshape(1, -1)).mean
         return r[0][0].detach().numpy(), r[0][1:].detach().numpy()
     def _find_surrogate_min(self):
-        x_f = minimize(self.eval_surrogate, self.x, method='BFGS', jac=True, options={'gtol':1e-7})
+        tol = np.clip(self._best_grad_max*0.1, self.tol*0.1, self.tol*10)
+        x_f = minimize(self.eval_surrogate, self.x, method='BFGS', jac=True, options={'gtol':tol})
         if not x_f.success:
+            self.model.covar_module.base_kernel.lengthscale = self.length_scale * 0.1
             print(x_f.message)
         return x_f.x
 
@@ -180,10 +205,10 @@ class GPOPT:
             print(f"converged @ {x}")
             return True
         if y > self.last_y:
-            self.x = self.last_x
+            self.x = self.last_x.copy()
         else:
-            self.last_y = y
-            self.last_x = x
+            self.last_y = y.detach()
+            self.last_x = x.copy()
 
         self._train()
         self.x = self._find_surrogate_min()
