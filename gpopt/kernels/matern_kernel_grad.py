@@ -45,7 +45,11 @@ class MaternKernelGrad(MaternKernel):
         n_batch_dims = len(batch_shape)
         n1, d = x1.shape[-2:]
         n2 = x2.shape[-2]
-        l = self.lengthscale.repeat([*([1] * n_batch_dims), n1, n2,1])
+        if self.ard_num_dims:
+            l = self.lengthscale.repeat([*([1] * n_batch_dims), n1, n2,1])
+        else:
+            l = self.lengthscale.repeat([*([1] * n_batch_dims), n1, n2, d])
+
         K = torch.zeros(*batch_shape, n1 * (d + 1), n2 * (d + 1), device=x1.device, dtype=x1.dtype)
         if not diag:
             # Scale the inputs by the lengthscale (for stability)
@@ -68,32 +72,23 @@ class MaternKernelGrad(MaternKernel):
             # 2) First gradient block
             outer1 = outer.clone()
             prefactor_jac = 5. / (3. * l** 2) * (1 + root_five * radius_scale.view(n1,n2,1).repeat(1,1,d))
-            if not self.ard_num_dims:
-                prefactor_jac = prefactor_jac.repeat([*([1] * (n_batch_dims + 1)), d])
-                prefactor_jac = (prefactor_jac * outer1)
-            # jac = p*exp(-sqrt(5)*r/l)
-                jac = prefactor_jac * torch.exp(-root_five * radius/self.lengthscale).repeat([*([1] * (n_batch_dims + 1)), d])
-            else:
-                prefactor_jac = (prefactor_jac * outer1)
-                jac = prefactor_jac * torch.exp(-root_five *  radius_scale.view(n1,n2,1)).repeat([*([1] * n_batch_dims ),1,1, d])
+
+            prefactor_jac = (prefactor_jac * outer1)
+            jac = prefactor_jac * torch.exp(-root_five *  radius_scale.view(n1,n2,1)).repeat([*([1] * n_batch_dims ),1,1, d])
             K[..., :n1, n2:] = jac.transpose(-1, -2).reshape(*batch_shape, n1, n2*d)  # reshape to batch shape
             pass
             # 3) Second gradient block
             # the same
             outer2 = outer.transpose(-2, -3)
             prefactor_jac2 =  5. / (3. * l.transpose(-2,-3)** 2) * (1 + root_five * radius_scale.transpose(-1,-2).view(n2,n1,1).repeat(1,1,d))
-            if not self.ard_num_dims:
-                prefactor_jac2 = prefactor_jac2.repeat([*([1] * n_batch_dims), d, 1])
-                prefactor_jac2 = (prefactor_jac2 * -outer2)
-                jac2 = prefactor_jac2 * torch.exp(-root_five * radius / self.lengthscale).repeat([*([1] * n_batch_dims), d, 1])
-            else:
-                prefactor_jac2 = (prefactor_jac2 * -outer2)
-                jac2 = prefactor_jac2 *  torch.exp(-root_five *  radius_scale.transpose(-1,-2).view(n2,n1,1))
+
+            prefactor_jac2 = (prefactor_jac2 * -outer2)
+            jac2 = prefactor_jac2 *  torch.exp(-root_five *  radius_scale.transpose(-1,-2).view(n2,n1,1))
             K[..., n1:, :n2] = jac2.transpose(-1,-3).reshape(*batch_shape, n1*d, n2)
 
             # 4) Hessian block/
             # outer3 diff x diff  : nd x nd
-            outer3 = outer1.reshape([*([1] * n_batch_dims ), n1,n2,d,1]) * outer2.reshape([*([1] * n_batch_dims ), n1,n2,1,d])  * -1
+            outer3 = outer1.unsqueeze(-1) * outer1.unsqueeze(-2)
 
             # P = 5. * outer3
             P = 5. * outer3
@@ -105,8 +100,8 @@ class MaternKernelGrad(MaternKernel):
             exp_ = torch.exp(-root_five * radius_scale)
             K[..., n1:, n2:] = (prefactor * exp_.reshape(*batch_shape,n1,n2,1,1)).permute(-2,-4,-1,-3).reshape(n1*d, n2*d)
             # Symmetrize for stability
-            # if n1 == n2 and torch.eq(x1, x2).all():
-            #     K = 0.5 * (K.transpose(-1, -2) + K)
+            if n1 == n2 and torch.eq(x1, x2).all():
+                K = 0.5 * (K.transpose(-1, -2) + K)
 
             # Apply a perfect shuffle permutation to match the MutiTask ordering
             pi1 = torch.arange(n1 * (d + 1)).view(d + 1, n1).t().reshape((n1 * (d + 1)))
