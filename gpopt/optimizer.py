@@ -83,7 +83,7 @@ class GPModelWithDerivatives(gpytorch.models.ExactGP):
             self.mean_module = AnalyticGradMean(analytic_prior,cache_prior)
         else:
             self.mean_module = gpytorch.means.ConstantMeanGrad()
-        self.covar_module = ScaleKernel(self.base_kernel(ard_num_dims=train_x[0].shape[0]))
+        self.covar_module = ScaleKernel(self.base_kernel(ard_num_dims=train_x[0].shape[0],lengthscale_constraint=Interval(1e-1, 10)))
 
     def forward(self, x):
         mean_x = self.mean_module(x)
@@ -158,7 +158,7 @@ class GPOPT:
             model.covar_module.raw_outputscale = self.model.covar_module.raw_outputscale
         else:
             model.covar_module.base_kernel.lengthscale = self.length_scale * torch.ones(self.len_x)
-        model.covar_module.base_kernel.raw_lengthscale.requires_grad = False
+        # model.covar_module.base_kernel.raw_lengthscale.requires_grad = False
         model.mean_module.constant.requires_grad = False
         model.train()
         optimizer = torch.optim.Adam(model.parameters(),
