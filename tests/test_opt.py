@@ -8,6 +8,10 @@ import numpy as np
 from gpopt.utils import func_with_grad, rosenbrock
 from gpopt.optimizer import GPOPT
 from unittest import TestCase
+import torch
+torch.set_default_dtype(torch.float64)
+# import logging
+# logging.basicConfig(level=logging.INFO)
 # for debugger
 # import sys
 # import logging
@@ -70,7 +74,7 @@ class GPOptTest(TestCase):
             data = mem_file.read()
             opt_new = pickle.loads(data)
 
-# if __name__ == '__main__':
-#     test = GPOptTest()
-#     test.setUp()
-#     test.test_rosenbrock()
+if __name__ == '__main__':
+    test = GPOptTest()
+    test.setUp()
+    test.test_analy_prior()
