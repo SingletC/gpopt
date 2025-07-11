@@ -83,7 +83,7 @@ class GPModelWithDerivatives(gpytorch.models.ExactGP):
             self.mean_module = AnalyticGradMean(analytic_prior,cache_prior)
         else:
             self.mean_module = gpytorch.means.ConstantMeanGrad()
-        self.covar_module = ScaleKernel(self.base_kernel(ard_num_dims=train_x[0].shape[0],lengthscale_constraint=Interval(1e-1, 10)))
+        self.covar_module = ScaleKernel(self.base_kernel(ard_num_dims=train_x[0].shape[0],lengthscale_constraint=Interval(1e-2, 10)))
 
     def forward(self, x):
         mean_x = self.mean_module(x)
